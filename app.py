@@ -120,12 +120,21 @@ latent_score = (
 prob_true = 1 / (1 + np.exp(-latent_score))
 df["true_approval"] = (prob_true > 0.5).astype(int)
 
-# Train model
+# Train model safely
 X = df[features]
 y = df["true_approval"]
 
+# Ensure both classes exist
+if y.nunique() < 2:
+    st.error(
+        "Model training failed because all applicants were assigned the same outcome. "
+        "Try adjusting the random seed or approval threshold."
+    )
+    st.stop()
+
 model = LogisticRegression(max_iter=2000)
 model.fit(X, y)
+
 
 df["approval_probability"] = model.predict_proba(X)[:, 1]
 df["model_decision"] = (df["approval_probability"] >= decision_threshold).astype(int)
