@@ -1,153 +1,231 @@
-import streamlit as st
 import numpy as np
 import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_curve, auc
 
 # -------------------------------
-# CONFIG
+# App Configuration
 # -------------------------------
-st.set_page_config(page_title="AI Loan Bias Audit Framework", layout="wide")
+st.set_page_config(page_title="AI Loan Approval Bias Audit", layout="wide")
 
-RANDOM_SEED = 42
-np.random.seed(RANDOM_SEED)
-
-# -------------------------------
-# DATA GENERATION
-# -------------------------------
-def generate_applicants(n):
-    data = pd.DataFrame({
-        "income": np.random.normal(65000, 18000, n).clip(20000, 200000),
-        "credit_score": np.random.normal(680, 60, n).clip(300, 850),
-        "debt_ratio": np.random.uniform(0.1, 0.6, n),
-        "socioeconomic_index": np.random.choice(
-            ["low", "medium", "high"], n, p=[0.3, 0.5, 0.2]
-        )
-    })
-    return data
-
-# -------------------------------
-# DECISION MODEL
-# -------------------------------
-def loan_decision_model(df):
-    score = (
-        0.4 * (df["credit_score"] / 850) +
-        0.35 * (df["income"] / 200000) -
-        0.25 * df["debt_ratio"]
-    )
-
-    # Proxy bias via socioeconomic index
-    bias_map = {"low": -0.05, "medium": 0.0, "high": 0.05}
-    score += df["socioeconomic_index"].map(bias_map)
-
-    df["approval_score"] = score
-    df["approved"] = (score >= 0.5).astype(int)
-    return df
-
-# -------------------------------
-# FAIRNESS METRICS
-# -------------------------------
-def approval_rates(df):
-    return df.groupby("socioeconomic_index")["approved"].mean()
-
-def disparate_impact(rates):
-    return rates.min() / rates.max()
-
-def statistical_parity_diff(rates):
-    return rates.max() - rates.min()
-
-# -------------------------------
-# COUNTERFACTUAL FAIRNESS
-# -------------------------------
-def counterfactual_analysis(df):
-    flips = 0
-    for idx, row in df.iterrows():
-        original = row["approved"]
-        for group in ["low", "medium", "high"]:
-            if group != row["socioeconomic_index"]:
-                test_row = row.copy()
-                test_row["socioeconomic_index"] = group
-                test_df = pd.DataFrame([test_row])
-                decision = loan_decision_model(test_df)["approved"].iloc[0]
-                if decision != original:
-                    flips += 1
-                    break
-    return flips / len(df)
-
-# -------------------------------
-# MONTE CARLO STRESS TEST
-# -------------------------------
-def monte_carlo_bias(runs, n):
-    disparities = []
-    for _ in range(runs):
-        df = generate_applicants(n)
-        df = loan_decision_model(df)
-        rates = approval_rates(df)
-        disparities.append(statistical_parity_diff(rates))
-    return np.array(disparities)
-
-# -------------------------------
-# MITIGATION
-# -------------------------------
-def mitigate_bias(df):
-    df = df.copy()
-    df["approval_score"] -= df["socioeconomic_index"].map(
-        {"low": -0.05, "medium": 0.0, "high": 0.05}
-    )
-    df["approved"] = (df["approval_score"] >= 0.5).astype(int)
-    return df
-
-# -------------------------------
-# STREAMLIT UI
-# -------------------------------
-st.title("AI Algorithmic Fairness & Bias Audit Framework")
-st.markdown(
-    "This system evaluates algorithmic bias in financial decision models "
-    "using statistical, counterfactual, and stress-testing methods."
+st.title("Algorithmic Bias Audit for AI-Based Loan Approval Systems")
+st.write(
+    """
+    This application simulates an AI-driven loan approval system and evaluates
+    whether indirect proxy variables introduce bias across demographic groups.
+    The model reflects how real financial institutions audit fairness in
+    high-impact decision systems.
+    """
 )
 
-n_applicants = st.slider("Number of Applicants", 300, 5000, 1000)
-runs = st.slider("Monte Carlo Simulations", 50, 300, 150)
+# -------------------------------
+# Sidebar Controls
+# -------------------------------
+st.sidebar.header("Simulation Controls")
 
-df = generate_applicants(n_applicants)
-df = loan_decision_model(df)
+n_applicants = st.sidebar.slider(
+    "Number of Applicants",
+    min_value=500,
+    max_value=5000,
+    value=2000,
+    step=500
+)
 
-st.subheader("Sample Applicant Data")
-st.dataframe(df.head())
+decision_threshold = st.sidebar.slider(
+    "Approval Probability Threshold",
+    min_value=0.3,
+    max_value=0.7,
+    value=0.5,
+    step=0.05
+)
 
-rates = approval_rates(df)
+random_seed = st.sidebar.number_input(
+    "Random Seed",
+    value=42,
+    step=1
+)
 
-st.subheader("Approval Rates by Group")
-st.write(rates)
+np.random.seed(random_seed)
 
-spd = statistical_parity_diff(rates)
-di = disparate_impact(rates)
+# -------------------------------
+# Data Generation
+# -------------------------------
+def generate_applicant_data(n):
+    groups = np.random.choice(["Group A", "Group B"], size=n, p=[0.5, 0.5])
 
-st.subheader("Bias Metrics")
-st.write({
-    "Statistical Parity Difference": round(spd, 4),
-    "Disparate Impact Ratio": round(di, 4)
-})
+    data = []
 
-cf_rate = counterfactual_analysis(df)
+    for g in groups:
+        if g == "Group A":
+            credit_score = np.random.normal(720, 40)
+            income = np.random.normal(85000, 15000)
+            zip_risk = np.random.normal(0.30, 0.08)   # safer zip codes
+        else:
+            credit_score = np.random.normal(680, 45)
+            income = np.random.normal(70000, 18000)
+            zip_risk = np.random.normal(0.55, 0.10)   # higher-risk zip codes
 
-st.subheader("Counterfactual Fairness")
-st.write(f"Decision Flip Rate: {cf_rate:.2%}")
+        debt_to_income = np.clip(np.random.normal(0.30, 0.10), 0.05, 0.8)
+        credit_history = np.clip(np.random.normal(8, 4), 1, 25)
 
-stress = monte_carlo_bias(runs, n_applicants)
+        data.append([
+            g,
+            credit_score,
+            income,
+            debt_to_income,
+            credit_history,
+            zip_risk
+        ])
 
-st.subheader("Bias Stress Test")
-st.write({
-    "Mean Bias": round(stress.mean(), 4),
-    "Worst-Case Bias": round(stress.max(), 4)
-})
+    df = pd.DataFrame(
+        data,
+        columns=[
+            "group",
+            "credit_score",
+            "income",
+            "debt_to_income",
+            "credit_history_length",
+            "zip_risk_score"
+        ]
+    )
 
-df_mitigated = mitigate_bias(df)
-rates_mitigated = approval_rates(df_mitigated)
+    return df
 
-st.subheader("Post-Mitigation Results")
-st.write(rates_mitigated)
+df = generate_applicant_data(n_applicants)
 
-st.markdown(
-    "This audit demonstrates how proxy variables can introduce systemic bias "
-    "even when protected attributes are not explicitly used."
+# -------------------------------
+# Train Loan Approval Model
+# -------------------------------
+features = [
+    "credit_score",
+    "income",
+    "debt_to_income",
+    "credit_history_length",
+    "zip_risk_score"
+]
+
+# Ground truth approval logic (hidden from model)
+latent_score = (
+    0.004 * df["credit_score"]
+    + 0.00001 * df["income"]
+    - 2.0 * df["debt_to_income"]
+    + 0.05 * df["credit_history_length"]
+    - 1.5 * df["zip_risk_score"]
+)
+
+prob_true = 1 / (1 + np.exp(-latent_score))
+df["true_approval"] = (prob_true > 0.5).astype(int)
+
+# Train model
+X = df[features]
+y = df["true_approval"]
+
+model = LogisticRegression(max_iter=2000)
+model.fit(X, y)
+
+df["approval_probability"] = model.predict_proba(X)[:, 1]
+df["model_decision"] = (df["approval_probability"] >= decision_threshold).astype(int)
+
+# -------------------------------
+# Fairness Metrics
+# -------------------------------
+def statistical_parity_difference(df):
+    rates = df.groupby("group")["model_decision"].mean()
+    return rates.max() - rates.min()
+
+def disparate_impact_ratio(df):
+    rates = df.groupby("group")["model_decision"].mean()
+    return rates.min() / rates.max()
+
+def equal_opportunity_difference(df):
+    tpr = {}
+    for g in df["group"].unique():
+        subset = df[df["group"] == g]
+        positives = subset[subset["true_approval"] == 1]
+        tpr[g] = positives["model_decision"].mean()
+    return max(tpr.values()) - min(tpr.values())
+
+spd = statistical_parity_difference(df)
+dir_ratio = disparate_impact_ratio(df)
+eod = equal_opportunity_difference(df)
+
+# -------------------------------
+# Layout
+# -------------------------------
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("Approval Rates by Group")
+    approval_rates = df.groupby("group")["model_decision"].mean()
+
+    fig, ax = plt.subplots()
+    approval_rates.plot(kind="bar", ax=ax)
+    ax.set_ylabel("Approval Rate")
+    ax.set_ylim(0, 1)
+    st.pyplot(fig)
+
+with col2:
+    st.subheader("Fairness Metrics")
+    st.metric("Statistical Parity Difference", round(spd, 3))
+    st.metric("Disparate Impact Ratio", round(dir_ratio, 3))
+    st.metric("Equal Opportunity Difference", round(eod, 3))
+
+# -------------------------------
+# Distribution Plot
+# -------------------------------
+st.subheader("Approval Probability Distributions")
+
+fig, ax = plt.subplots()
+for g in df["group"].unique():
+    sns.kdeplot(
+        df[df["group"] == g]["approval_probability"],
+        label=g,
+        ax=ax
+    )
+
+ax.set_xlabel("Predicted Approval Probability")
+ax.set_ylabel("Density")
+ax.legend()
+st.pyplot(fig)
+
+# -------------------------------
+# ROC Curves
+# -------------------------------
+st.subheader("Model Performance by Group")
+
+fig, ax = plt.subplots()
+
+for g in df["group"].unique():
+    subset = df[df["group"] == g]
+    fpr, tpr, _ = roc_curve(subset["true_approval"], subset["approval_probability"])
+    roc_auc = auc(fpr, tpr)
+    ax.plot(fpr, tpr, label=f"{g} (AUC = {roc_auc:.2f})")
+
+ax.plot([0, 1], [0, 1], linestyle="--")
+ax.set_xlabel("False Positive Rate")
+ax.set_ylabel("True Positive Rate")
+ax.legend()
+st.pyplot(fig)
+
+# -------------------------------
+# Interpretation
+# -------------------------------
+st.subheader("Ethical and Financial Interpretation")
+st.write(
+    """
+    Although the model does not explicitly use protected demographic attributes,
+    proxy variables such as zip code risk score introduce statistically measurable
+    disparities in approval outcomes.
+
+    This reflects real-world financial systems, where indirect correlations can
+    produce unequal treatment even when models are formally race-blind.
+
+    Such findings emphasize the importance of continuous auditing, fairness-aware
+    modeling, and regulatory oversight in AI-driven financial decision systems.
+    """
 )
 
