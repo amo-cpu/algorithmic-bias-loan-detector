@@ -1,149 +1,153 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
+import pandas as pd
 
-# -----------------------------
-# Page Config
-# -----------------------------
-st.set_page_config(
-    page_title="AI Loan Bias Detector",
-    layout="wide"
-)
+# -------------------------------
+# CONFIG
+# -------------------------------
+st.set_page_config(page_title="AI Loan Bias Audit Framework", layout="wide")
 
-st.title("🏦 AI Algorithmic Bias Detector for Loan Approvals")
-st.write(
-    "This tool simulates a loan approval AI model and evaluates whether its decisions "
-    "introduce bias across different demographic and financial groups."
-)
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
 
-# -----------------------------
-# Data Generation
-# -----------------------------
-@st.cache_data
-def generate_data(n=1000):
-    np.random.seed(42)
+# -------------------------------
+# DATA GENERATION
+# -------------------------------
+def generate_applicants(n):
+    data = pd.DataFrame({
+        "income": np.random.normal(65000, 18000, n).clip(20000, 200000),
+        "credit_score": np.random.normal(680, 60, n).clip(300, 850),
+        "debt_ratio": np.random.uniform(0.1, 0.6, n),
+        "socioeconomic_index": np.random.choice(
+            ["low", "medium", "high"], n, p=[0.3, 0.5, 0.2]
+        )
+    })
+    return data
 
-    income = np.random.normal(60000, 15000, n)
-    credit_score = np.random.normal(680, 50, n)
-    zip_code = np.random.choice(["Low Income Area", "Middle Income Area", "High Income Area"], n)
-
-    # Encode zip code bias (real-world proxy issue)
-    zip_bias = np.where(zip_code == "Low Income Area", -0.8,
-                np.where(zip_code == "Middle Income Area", 0, 0.8))
-
-    approval_probability = (
-        0.00003 * income +
-        0.01 * credit_score +
-        zip_bias -
-        8
+# -------------------------------
+# DECISION MODEL
+# -------------------------------
+def loan_decision_model(df):
+    score = (
+        0.4 * (df["credit_score"] / 850) +
+        0.35 * (df["income"] / 200000) -
+        0.25 * df["debt_ratio"]
     )
 
-    approved = (1 / (1 + np.exp(-approval_probability)) > 0.5).astype(int)
+    # Proxy bias via socioeconomic index
+    bias_map = {"low": -0.05, "medium": 0.0, "high": 0.05}
+    score += df["socioeconomic_index"].map(bias_map)
 
-    return pd.DataFrame({
-        "Income": income,
-        "CreditScore": credit_score,
-        "ZipCode": zip_code,
-        "Approved": approved
-    })
+    df["approval_score"] = score
+    df["approved"] = (score >= 0.5).astype(int)
+    return df
 
-df = generate_data()
+# -------------------------------
+# FAIRNESS METRICS
+# -------------------------------
+def approval_rates(df):
+    return df.groupby("socioeconomic_index")["approved"].mean()
 
-# -----------------------------
-# Sidebar Controls
-# -----------------------------
-st.sidebar.header("Simulation Controls")
-sample_size = st.sidebar.slider("Number of Applicants", 300, 3000, 1000)
+def disparate_impact(rates):
+    return rates.min() / rates.max()
 
-df = generate_data(sample_size)
+def statistical_parity_diff(rates):
+    return rates.max() - rates.min()
 
-# -----------------------------
-# Train AI Model
-# -----------------------------
-X = df[["Income", "CreditScore"]]
-y = df["Approved"]
+# -------------------------------
+# COUNTERFACTUAL FAIRNESS
+# -------------------------------
+def counterfactual_analysis(df):
+    flips = 0
+    for idx, row in df.iterrows():
+        original = row["approved"]
+        for group in ["low", "medium", "high"]:
+            if group != row["socioeconomic_index"]:
+                test_row = row.copy()
+                test_row["socioeconomic_index"] = group
+                test_df = pd.DataFrame([test_row])
+                decision = loan_decision_model(test_df)["approved"].iloc[0]
+                if decision != original:
+                    flips += 1
+                    break
+    return flips / len(df)
 
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+# -------------------------------
+# MONTE CARLO STRESS TEST
+# -------------------------------
+def monte_carlo_bias(runs, n):
+    disparities = []
+    for _ in range(runs):
+        df = generate_applicants(n)
+        df = loan_decision_model(df)
+        rates = approval_rates(df)
+        disparities.append(statistical_parity_diff(rates))
+    return np.array(disparities)
 
-model = LogisticRegression()
-model.fit(X_scaled, y)
+# -------------------------------
+# MITIGATION
+# -------------------------------
+def mitigate_bias(df):
+    df = df.copy()
+    df["approval_score"] -= df["socioeconomic_index"].map(
+        {"low": -0.05, "medium": 0.0, "high": 0.05}
+    )
+    df["approved"] = (df["approval_score"] >= 0.5).astype(int)
+    return df
 
-df["AI_Prediction"] = model.predict(X_scaled)
-
-# -----------------------------
-# Display Dataset
-# -----------------------------
-st.subheader("📊 Simulated Applicant Data")
-st.dataframe(df.head(20))
-
-# -----------------------------
-# Approval Rate Analysis
-# -----------------------------
-st.subheader("⚖️ Approval Rates by Group")
-
-approval_by_zip = df.groupby("ZipCode")["AI_Prediction"].mean()
-
-fig, ax = plt.subplots()
-approval_by_zip.plot(kind="bar", ax=ax)
-ax.set_ylabel("Approval Rate")
-ax.set_title("Loan Approval Rate by Zip Code Group")
-st.pyplot(fig)
-
-# -----------------------------
-# Bias Metrics
-# -----------------------------
-st.subheader("📉 Bias Metrics")
-
-max_rate = approval_by_zip.max()
-min_rate = approval_by_zip.min()
-disparity = max_rate - min_rate
-
-st.metric("Max Approval Rate", f"{max_rate:.2%}")
-st.metric("Min Approval Rate", f"{min_rate:.2%}")
-st.metric("Approval Rate Disparity", f"{disparity:.2%}")
-
-# -----------------------------
-# Ethical Analysis
-# -----------------------------
-st.subheader("🧠 Ethical Interpretation")
-
-st.write(
-    """
-This simulation demonstrates how **proxy variables** such as zip code can introduce
-systemic bias into AI-driven financial decisions.
-
-Although the model does not explicitly use demographic attributes, indirect correlations
-can still result in unequal outcomes across socioeconomic groups.
-
-**Key Takeaway:**  
-AI systems must be continuously audited, validated, and adjusted to ensure fairness —
-especially in high-impact domains like finance.
-"""
+# -------------------------------
+# STREAMLIT UI
+# -------------------------------
+st.title("AI Algorithmic Fairness & Bias Audit Framework")
+st.markdown(
+    "This system evaluates algorithmic bias in financial decision models "
+    "using statistical, counterfactual, and stress-testing methods."
 )
 
-# -----------------------------
-# Bias Mitigation Example
-# -----------------------------
-st.subheader("🛠️ Bias Mitigation Strategy")
+n_applicants = st.slider("Number of Applicants", 300, 5000, 1000)
+runs = st.slider("Monte Carlo Simulations", 50, 300, 150)
 
-st.write(
-    """
-Possible mitigation strategies include:
-- Removing proxy variables correlated with protected attributes
-- Rebalancing training data
-- Applying fairness-aware model constraints
-- Conducting regular post-deployment audits
-"""
+df = generate_applicants(n_applicants)
+df = loan_decision_model(df)
+
+st.subheader("Sample Applicant Data")
+st.dataframe(df.head())
+
+rates = approval_rates(df)
+
+st.subheader("Approval Rates by Group")
+st.write(rates)
+
+spd = statistical_parity_diff(rates)
+di = disparate_impact(rates)
+
+st.subheader("Bias Metrics")
+st.write({
+    "Statistical Parity Difference": round(spd, 4),
+    "Disparate Impact Ratio": round(di, 4)
+})
+
+cf_rate = counterfactual_analysis(df)
+
+st.subheader("Counterfactual Fairness")
+st.write(f"Decision Flip Rate: {cf_rate:.2%}")
+
+stress = monte_carlo_bias(runs, n_applicants)
+
+st.subheader("Bias Stress Test")
+st.write({
+    "Mean Bias": round(stress.mean(), 4),
+    "Worst-Case Bias": round(stress.max(), 4)
+})
+
+df_mitigated = mitigate_bias(df)
+rates_mitigated = approval_rates(df_mitigated)
+
+st.subheader("Post-Mitigation Results")
+st.write(rates_mitigated)
+
+st.markdown(
+    "This audit demonstrates how proxy variables can introduce systemic bias "
+    "even when protected attributes are not explicitly used."
 )
 
-# -----------------------------
-# Conclusion
-# -----------------------------
-st.success(
-    "This project emphasizes responsible AI development, transparency, and ethical oversight — "
-    "principles critical to modern financial systems."
-)
