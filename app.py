@@ -1,239 +1,238 @@
+import streamlit as st
 import numpy as np
 import pandas as pd
-import streamlit as st
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_curve, auc
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 
-# -------------------------------
-# App Configuration
-# -------------------------------
-st.set_page_config(page_title="AI Loan Approval Bias Audit", layout="wide")
+# ===============================
+# PAGE CONFIG
+# ===============================
 
-st.title("Algorithmic Bias Audit for AI-Based Loan Approval Systems")
-st.write(
-    """
-    This application simulates an AI-driven loan approval system and evaluates
-    whether indirect proxy variables introduce bias across demographic groups.
-    The model reflects how real financial institutions audit fairness in
-    high-impact decision systems.
-    """
+st.set_page_config(
+    page_title="Algorithmic Bias Audit: Loan Approval AI",
+    layout="wide"
 )
 
-# -------------------------------
-# Sidebar Controls
-# -------------------------------
+st.title("Algorithmic Bias Audit for AI-Based Loan Approval Systems")
+
+st.markdown(
+    """
+This application simulates a real-world AI loan approval system and evaluates
+whether indirect proxy variables introduce bias across demographic groups.
+
+The model mirrors how financial institutions audit fairness in high-impact
+machine learning systems.
+"""
+)
+
+# ===============================
+# SIDEBAR CONTROLS
+# ===============================
+
 st.sidebar.header("Simulation Controls")
 
-n_applicants = st.sidebar.slider(
+num_applicants = st.sidebar.slider(
     "Number of Applicants",
     min_value=500,
     max_value=5000,
-    value=2000,
-    step=500
+    step=250,
+    value=1000
 )
 
-decision_threshold = st.sidebar.slider(
+approval_threshold = st.sidebar.slider(
     "Approval Probability Threshold",
-    min_value=0.3,
-    max_value=0.7,
-    value=0.5,
-    step=0.05
+    min_value=0.30,
+    max_value=0.70,
+    step=0.01,
+    value=0.50
 )
 
-random_seed = st.sidebar.number_input(
+random_seed = st.sidebar.slider(
     "Random Seed",
-    value=42,
-    step=1
+    min_value=1,
+    max_value=100,
+    value=42
 )
 
-np.random.seed(random_seed)
+# ===============================
+# DATA GENERATION
+# ===============================
 
-# -------------------------------
-# Data Generation
-# -------------------------------
-def generate_applicant_data(n):
-    groups = np.random.choice(["Group A", "Group B"], size=n, p=[0.5, 0.5])
+def generate_applicants(n, seed):
+    rng = np.random.default_rng(seed)
 
-    data = []
+    df = pd.DataFrame({
+        "income": rng.normal(75000, 22000, n).clip(20000, 200000),
+        "credit_score": rng.normal(680, 55, n).clip(300, 850),
+        "debt_ratio": rng.uniform(0.05, 0.65, n),
+        "zip_proxy": rng.integers(0, 2, n)  # proxy for socioeconomic status
+    })
 
-    for g in groups:
-        if g == "Group A":
-            credit_score = np.random.normal(720, 40)
-            income = np.random.normal(85000, 15000)
-            zip_risk = np.random.normal(0.30, 0.08)   # safer zip codes
-        else:
-            credit_score = np.random.normal(680, 45)
-            income = np.random.normal(70000, 18000)
-            zip_risk = np.random.normal(0.55, 0.10)   # higher-risk zip codes
-
-        debt_to_income = np.clip(np.random.normal(0.30, 0.10), 0.05, 0.8)
-        credit_history = np.clip(np.random.normal(8, 4), 1, 25)
-
-        data.append([
-            g,
-            credit_score,
-            income,
-            debt_to_income,
-            credit_history,
-            zip_risk
-        ])
-
-    df = pd.DataFrame(
-        data,
-        columns=[
-            "group",
-            "credit_score",
-            "income",
-            "debt_to_income",
-            "credit_history_length",
-            "zip_risk_score"
-        ]
-    )
-
+    df["group"] = df["zip_proxy"].map({0: "Group A", 1: "Group B"})
     return df
 
-df = generate_applicant_data(n_applicants)
+# ===============================
+# APPROVAL PROBABILITY MODEL
+# ===============================
 
-# -------------------------------
-# Train Loan Approval Model
-# -------------------------------
-features = [
-    "credit_score",
-    "income",
-    "debt_to_income",
-    "credit_history_length",
-    "zip_risk_score"
-]
+def approval_probability(df):
+    z = (
+        0.000045 * df["income"]
+        + 0.0065 * df["credit_score"]
+        - 2.8 * df["debt_ratio"]
+        - 0.45 * df["zip_proxy"]
+        - 6.2
+    )
 
-# Ground truth approval logic (hidden from model)
-latent_score = (
-    0.004 * df["credit_score"]
-    + 0.00001 * df["income"]
-    - 2.0 * df["debt_to_income"]
-    + 0.05 * df["credit_history_length"]
-    - 1.5 * df["zip_risk_score"]
-)
+    return 1 / (1 + np.exp(-z))
 
-prob_true = 1 / (1 + np.exp(-latent_score))
-df["true_approval"] = (prob_true > 0.5).astype(int)
+# ===============================
+# SAFE LABEL GENERATION
+# ===============================
 
-# Train model safely
-X = df[features]
-y = df["true_approval"]
+def generate_labels(probabilities, threshold):
+    y = (probabilities >= threshold).astype(int)
 
-# Ensure both classes exist
-if y.nunique() < 2:
+    # Safety check: prevent single-class training
+    if y.nunique() < 2:
+        return None
+
+    return y
+
+# ===============================
+# MODEL TRAINING
+# ===============================
+
+def train_model(X, y):
+    model = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(
+            max_iter=1000,
+            class_weight="balanced"
+        ))
+    ])
+    model.fit(X, y)
+    return model
+
+# ===============================
+# RUN SIMULATION
+# ===============================
+
+df = generate_applicants(num_applicants, random_seed)
+df["approval_probability"] = approval_probability(df)
+
+y = generate_labels(df["approval_probability"], approval_threshold)
+
+if y is None:
     st.error(
-        "Model training failed because all applicants were assigned the same outcome. "
-        "Try adjusting the random seed or approval threshold."
+        "Model training halted because all applicants were assigned the same outcome. "
+        "Adjust the approval threshold or random seed."
     )
     st.stop()
 
-model = LogisticRegression(max_iter=2000)
-model.fit(X, y)
+X = df[["income", "credit_score", "debt_ratio", "zip_proxy"]]
+model = train_model(X, y)
 
+df["approved"] = y
 
-df["approval_probability"] = model.predict_proba(X)[:, 1]
-df["model_decision"] = (df["approval_probability"] >= decision_threshold).astype(int)
+# ===============================
+# METRICS
+# ===============================
 
-# -------------------------------
-# Fairness Metrics
-# -------------------------------
-def statistical_parity_difference(df):
-    rates = df.groupby("group")["model_decision"].mean()
-    return rates.max() - rates.min()
+st.subheader("Approval Rate Analysis")
 
-def disparate_impact_ratio(df):
-    rates = df.groupby("group")["model_decision"].mean()
-    return rates.min() / rates.max()
+group_stats = (
+    df.groupby("group")["approved"]
+    .mean()
+    .reset_index()
+    .rename(columns={"approved": "approval_rate"})
+)
 
-def equal_opportunity_difference(df):
-    tpr = {}
-    for g in df["group"].unique():
-        subset = df[df["group"] == g]
-        positives = subset[subset["true_approval"] == 1]
-        tpr[g] = positives["model_decision"].mean()
-    return max(tpr.values()) - min(tpr.values())
-
-spd = statistical_parity_difference(df)
-dir_ratio = disparate_impact_ratio(df)
-eod = equal_opportunity_difference(df)
-
-# -------------------------------
-# Layout
-# -------------------------------
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Approval Rates by Group")
-    approval_rates = df.groupby("group")["model_decision"].mean()
-
-    fig, ax = plt.subplots()
-    approval_rates.plot(kind="bar", ax=ax)
-    ax.set_ylabel("Approval Rate")
-    ax.set_ylim(0, 1)
-    st.pyplot(fig)
+    st.dataframe(group_stats, use_container_width=True)
 
 with col2:
-    st.subheader("Fairness Metrics")
-    st.metric("Statistical Parity Difference", round(spd, 3))
-    st.metric("Disparate Impact Ratio", round(dir_ratio, 3))
-    st.metric("Equal Opportunity Difference", round(eod, 3))
+    fig, ax = plt.subplots()
+    ax.bar(group_stats["group"], group_stats["approval_rate"])
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Approval Rate")
+    ax.set_title("Approval Rates by Group")
+    st.pyplot(fig)
 
-# -------------------------------
-# Distribution Plot
-# -------------------------------
-st.subheader("Approval Probability Distributions")
+# ===============================
+# BIAS METRICS
+# ===============================
 
-fig, ax = plt.subplots()
-for g in df["group"].unique():
-    sns.kdeplot(
-        df[df["group"] == g]["approval_probability"],
-        label=g,
-        ax=ax
-    )
+max_rate = group_stats["approval_rate"].max()
+min_rate = group_stats["approval_rate"].min()
+disparity = max_rate - min_rate
 
-ax.set_xlabel("Predicted Approval Probability")
-ax.set_ylabel("Density")
-ax.legend()
-st.pyplot(fig)
+st.subheader("Bias Metrics")
 
-# -------------------------------
-# ROC Curves
-# -------------------------------
-st.subheader("Model Performance by Group")
+c1, c2, c3 = st.columns(3)
 
-fig, ax = plt.subplots()
+c1.metric("Max Approval Rate", f"{max_rate:.2%}")
+c2.metric("Min Approval Rate", f"{min_rate:.2%}")
+c3.metric("Approval Rate Disparity", f"{disparity:.2%}")
 
-for g in df["group"].unique():
-    subset = df[df["group"] == g]
-    fpr, tpr, _ = roc_curve(subset["true_approval"], subset["approval_probability"])
-    roc_auc = auc(fpr, tpr)
-    ax.plot(fpr, tpr, label=f"{g} (AUC = {roc_auc:.2f})")
+# ===============================
+# FEATURE IMPORTANCE
+# ===============================
 
-ax.plot([0, 1], [0, 1], linestyle="--")
-ax.set_xlabel("False Positive Rate")
-ax.set_ylabel("True Positive Rate")
-ax.legend()
-st.pyplot(fig)
+st.subheader("Model Feature Influence")
 
-# -------------------------------
-# Interpretation
-# -------------------------------
-st.subheader("Ethical and Financial Interpretation")
-st.write(
+coefficients = model.named_steps["clf"].coef_[0]
+
+feature_df = pd.DataFrame({
+    "Feature": X.columns,
+    "Coefficient": coefficients
+}).sort_values(by="Coefficient", key=abs, ascending=False)
+
+fig2, ax2 = plt.subplots()
+ax2.barh(feature_df["Feature"], feature_df["Coefficient"])
+ax2.axvline(0)
+ax2.set_title("Logistic Regression Coefficients")
+st.pyplot(fig2)
+
+# ===============================
+# ETHICAL INTERPRETATION
+# ===============================
+
+st.subheader("Ethical Interpretation")
+
+st.markdown(
     """
-    Although the model does not explicitly use protected demographic attributes,
-    proxy variables such as zip code risk score introduce statistically measurable
-    disparities in approval outcomes.
+This simulation demonstrates how indirect proxy variables can introduce
+systemic bias into AI-driven financial decisions.
 
-    This reflects real-world financial systems, where indirect correlations can
-    produce unequal treatment even when models are formally race-blind.
+Although the model does not explicitly use protected demographic attributes,
+the inclusion of correlated proxy features (such as geographic indicators)
+leads to measurable disparities in approval outcomes.
 
-    Such findings emphasize the importance of continuous auditing, fairness-aware
-    modeling, and regulatory oversight in AI-driven financial decision systems.
+Key insight:  
+Bias can emerge even when sensitive attributes are excluded, emphasizing
+the importance of continuous auditing, transparency, and fairness testing
+in financial AI systems.
+"""
+)
+
+# ===============================
+# MITIGATION STRATEGIES
+# ===============================
+
+st.subheader("Bias Mitigation Strategies")
+
+st.markdown(
     """
+- Remove or constrain proxy variables correlated with protected attributes  
+- Apply fairness-aware model constraints during training  
+- Perform subgroup performance monitoring post-deployment  
+- Use counterfactual testing to evaluate decision robustness  
+- Conduct regular independent audits of automated decision systems  
+"""
 )
